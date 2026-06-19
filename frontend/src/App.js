@@ -4,7 +4,7 @@ import { AuthProvider, useAuth } from "./auth";
 import Login from "./pages/Login";
 import { StudentHome, StudentExtrato, StudentChallenges, StudentStore, StudentSavings } from "./pages/Student";
 import { TeacherHome, TeacherCreate, TeacherApprovals } from "./pages/Teacher";
-import { AdminHome, AdminUsers, AdminStore, AdminConfig } from "./pages/Admin";
+import { AdminHome, AdminUsers, AdminClasses, AdminStore, AdminConfig } from "./pages/Admin";
 import "./index.css";
 
 function Guard({ roles, children }) {
@@ -43,6 +43,7 @@ export default function App() {
           <Route path="/professor/aprovacoes" element={<Guard roles={["teacher"]}><TeacherApprovals /></Guard>} />
           <Route path="/admin" element={<Guard roles={["admin"]}><AdminHome /></Guard>} />
           <Route path="/admin/usuarios" element={<Guard roles={["admin"]}><AdminUsers /></Guard>} />
+          <Route path="/admin/turmas" element={<Guard roles={["admin"]}><AdminClasses /></Guard>} />
           <Route path="/admin/loja" element={<Guard roles={["admin"]}><AdminStore /></Guard>} />
           <Route path="/admin/config" element={<Guard roles={["admin"]}><AdminConfig /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />

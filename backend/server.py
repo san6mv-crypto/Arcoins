@@ -102,6 +102,21 @@ class StoreItemInput(BaseModel):
     stock: int = 100
 
 
+class CreateUserInput(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    role: Literal["student", "teacher", "admin"]
+    class_id: Optional[str] = None
+    initial_balance: Optional[float] = 0
+    initial_savings: Optional[float] = 0
+
+
+class CreateClassInput(BaseModel):
+    name: str
+    teacher_id: Optional[str] = None
+
+
 class PurchaseInput(BaseModel):
     item_id: str
 
@@ -350,6 +365,94 @@ async def admin_stats(user: dict = Depends(require_roles("admin"))):
 async def all_users(user: dict = Depends(require_roles("admin"))):
     users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
     return users
+
+
+@api.post("/admin/users")
+async def create_user(payload: CreateUserInput, user: dict = Depends(require_roles("admin"))):
+    email = payload.email.lower().strip()
+    if len(payload.password) < 4:
+        raise HTTPException(400, "Senha muito curta (mínimo 4 caracteres)")
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(400, "E-mail já cadastrado")
+    if payload.role == "student" and payload.class_id:
+        klass = await db.classes.find_one({"id": payload.class_id})
+        if not klass:
+            raise HTTPException(400, "Turma inválida")
+    avatar_seed = payload.name.replace(" ", "") or email
+    avatar_style = "adventurer" if payload.role == "student" else "avataaars"
+    uid = str(uuid.uuid4())
+    initial_balance = float(payload.initial_balance or 0)
+    initial_savings = float(payload.initial_savings or 0)
+    doc = {
+        "id": uid,
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name.strip(),
+        "role": payload.role,
+        "class_id": payload.class_id if payload.role == "student" else None,
+        "avatar": f"https://api.dicebear.com/7.x/{avatar_style}/svg?seed={avatar_seed}",
+        "balance": initial_balance,
+        "savings": initial_savings,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.users.insert_one(doc)
+    if payload.role == "student" and initial_balance > 0:
+        await db.transactions.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": uid,
+            "type": "adjustment",
+            "amount": initial_balance,
+            "description": "Saldo inicial de boas-vindas",
+            "created_at": now_utc().isoformat(),
+            "meta": {},
+        })
+    doc.pop("password_hash", None)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/admin/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(require_roles("admin"))):
+    if user_id == user["id"]:
+        raise HTTPException(400, "Você não pode remover a si mesmo")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "Usuário não encontrado")
+    await db.users.delete_one({"id": user_id})
+    return {"ok": True}
+
+
+@api.get("/admin/classes")
+async def list_classes_admin(user: dict = Depends(require_roles("admin"))):
+    classes = await db.classes.find({}, {"_id": 0}).to_list(200)
+    for c in classes:
+        c["student_count"] = await db.users.count_documents({"class_id": c["id"], "role": "student"})
+    return classes
+
+
+@api.post("/admin/classes")
+async def create_class(payload: CreateClassInput, user: dict = Depends(require_roles("admin"))):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Nome obrigatório")
+    existing = await db.classes.find_one({"name": name})
+    if existing:
+        raise HTTPException(400, "Turma já existe")
+    teacher_id = payload.teacher_id
+    if teacher_id:
+        t = await db.users.find_one({"id": teacher_id, "role": "teacher"})
+        if not t:
+            raise HTTPException(400, "Professor inválido")
+    klass = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "teacher_id": teacher_id,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.classes.insert_one(klass)
+    klass.pop("_id", None)
+    return klass
 
 
 @api.get("/admin/store")
