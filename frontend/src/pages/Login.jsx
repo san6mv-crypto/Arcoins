@@ -66,10 +66,10 @@ export default function Login() {
         <motion.div initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6, delay: 0.1 }} className="arc-card p-8 md:p-10">
           <h2 className="font-fredoka text-3xl font-bold text-arc-text mb-1">Bem-vindo(a) de volta!</h2>
           <p className="text-arc-muted mb-6">Entre para continuar sua jornada financeira.</p>
-          <form onSubmit={doLogin} className="space-y-4">
+          <form onSubmit={doLogin} className="space-y-4" noValidate>
             <div>
-              <label className="block text-sm font-semibold text-arc-text mb-2">E-mail</label>
-              <input data-testid="login-email-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="arc-input" placeholder="seu@email.edu" required />
+              <label className="block text-sm font-semibold text-arc-text mb-2">E-mail ou login</label>
+              <input data-testid="login-email-input" type="text" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} className="arc-input" placeholder="seu@email.edu ou @primeironome" required />
             </div>
             <div>
               <label className="block text-sm font-semibold text-arc-text mb-2">Senha</label>
