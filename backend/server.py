@@ -127,6 +127,16 @@ class VoucherCreate(BaseModel):
     description: Optional[str] = ""
     code: Optional[str] = None
     class_id: Optional[str] = None
+    max_uses: Optional[int] = 1
+    expires_at: Optional[str] = None  # ISO date string YYYY-MM-DD or full ISO
+
+
+class VoucherUpdate(BaseModel):
+    value: Optional[float] = None
+    description: Optional[str] = None
+    max_uses: Optional[int] = None
+    expires_at: Optional[str] = None
+    active: Optional[bool] = None
 
 
 class VoucherRedeem(BaseModel):
@@ -601,6 +611,37 @@ async def bulk_import_students(
 
 
 # ---------- Vouchers ----------
+def parse_expiry(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        if len(s) == 10:
+            d = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(hours=23, minutes=59, seconds=59)
+        else:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return d.isoformat()
+    except Exception:
+        raise HTTPException(400, "Data de validade inválida (use YYYY-MM-DD)")
+
+
+def voucher_status(v: dict) -> str:
+    if not v.get("active", True):
+        return "inactive"
+    if v.get("expires_at"):
+        try:
+            exp = datetime.fromisoformat(v["expires_at"].replace("Z", "+00:00"))
+            if exp < now_utc():
+                return "expired"
+        except Exception:
+            pass
+    if v.get("uses", 0) >= int(v.get("max_uses", 1)):
+        return "exhausted"
+    return "active"
+
+
 @api.post("/vouchers")
 async def voucher_create(payload: VoucherCreate, user: dict = Depends(require_roles("teacher", "admin"))):
     if payload.value <= 0:
@@ -614,6 +655,9 @@ async def voucher_create(payload: VoucherCreate, user: dict = Depends(require_ro
         klass = await db.classes.find_one({"id": payload.class_id})
         if not klass:
             raise HTTPException(400, "Turma inválida")
+    max_uses = int(payload.max_uses or 1)
+    if max_uses < 1 or max_uses > 1000:
+        raise HTTPException(400, "Máximo de usos deve estar entre 1 e 1000")
     v = {
         "id": str(uuid.uuid4()),
         "code": code,
@@ -622,13 +666,16 @@ async def voucher_create(payload: VoucherCreate, user: dict = Depends(require_ro
         "class_id": payload.class_id,
         "created_by": user["id"],
         "created_by_name": user["name"],
-        "redeemed_by": None,
-        "redeemed_at": None,
+        "max_uses": max_uses,
+        "uses": 0,
+        "expires_at": parse_expiry(payload.expires_at),
+        "redemptions": [],
         "active": True,
         "created_at": now_utc().isoformat(),
     }
     await db.vouchers.insert_one(v)
     v.pop("_id", None)
+    v["status"] = voucher_status(v)
     return v
 
 
@@ -636,13 +683,50 @@ async def voucher_create(payload: VoucherCreate, user: dict = Depends(require_ro
 async def voucher_list(user: dict = Depends(require_roles("teacher", "admin"))):
     q = {} if user["role"] == "admin" else {"created_by": user["id"]}
     vouchers = await db.vouchers.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-    # enrich with redeemer name
-    redeemed_ids = [v["redeemed_by"] for v in vouchers if v.get("redeemed_by")]
-    redeemers = await db.users.find({"id": {"$in": redeemed_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
-    rn = {r["id"]: r["name"] for r in redeemers}
     for v in vouchers:
-        v["redeemed_by_name"] = rn.get(v.get("redeemed_by"))
+        # backward compat for old single-use docs
+        if "max_uses" not in v:
+            v["max_uses"] = 1
+            v["uses"] = 1 if v.get("redeemed_by") else 0
+            v["redemptions"] = (
+                [{"user_id": v["redeemed_by"], "name": "", "redeemed_at": v.get("redeemed_at")}]
+                if v.get("redeemed_by") else []
+            )
+        v["status"] = voucher_status(v)
     return vouchers
+
+
+@api.patch("/vouchers/{voucher_id}")
+async def voucher_update(voucher_id: str, payload: VoucherUpdate, user: dict = Depends(require_roles("teacher", "admin"))):
+    v = await db.vouchers.find_one({"id": voucher_id})
+    if not v:
+        raise HTTPException(404, "Voucher não encontrado")
+    if user["role"] != "admin" and v.get("created_by") != user["id"]:
+        raise HTTPException(403, "Você só pode editar seus próprios vouchers")
+    updates = {}
+    if payload.value is not None:
+        if payload.value <= 0:
+            raise HTTPException(400, "Valor deve ser positivo")
+        updates["value"] = float(payload.value)
+    if payload.description is not None:
+        updates["description"] = payload.description.strip()
+    if payload.max_uses is not None:
+        mu = int(payload.max_uses)
+        if mu < 1 or mu > 1000:
+            raise HTTPException(400, "Máximo de usos entre 1 e 1000")
+        if mu < v.get("uses", 0):
+            raise HTTPException(400, f"max_uses ({mu}) não pode ser menor que usos atuais ({v.get('uses', 0)})")
+        updates["max_uses"] = mu
+    if payload.expires_at is not None:
+        updates["expires_at"] = parse_expiry(payload.expires_at)
+    if payload.active is not None:
+        updates["active"] = bool(payload.active)
+    if not updates:
+        raise HTTPException(400, "Nada para atualizar")
+    await db.vouchers.update_one({"id": voucher_id}, {"$set": updates})
+    fresh = await db.vouchers.find_one({"id": voucher_id}, {"_id": 0})
+    fresh["status"] = voucher_status(fresh)
+    return fresh
 
 
 @api.delete("/vouchers/{voucher_id}")
@@ -652,8 +736,8 @@ async def voucher_delete(voucher_id: str, user: dict = Depends(require_roles("te
         raise HTTPException(404, "Voucher não encontrado")
     if user["role"] != "admin" and v.get("created_by") != user["id"]:
         raise HTTPException(403, "Você só pode remover seus próprios vouchers")
-    if v.get("redeemed_by"):
-        raise HTTPException(400, "Voucher já resgatado não pode ser removido")
+    if v.get("uses", 0) > 0 or v.get("redeemed_by"):
+        raise HTTPException(400, "Voucher já resgatado não pode ser removido. Desative-o se preferir.")
     await db.vouchers.delete_one({"id": voucher_id})
     return {"ok": True}
 
@@ -661,20 +745,36 @@ async def voucher_delete(voucher_id: str, user: dict = Depends(require_roles("te
 @api.post("/student/vouchers/redeem")
 async def voucher_redeem(payload: VoucherRedeem, user: dict = Depends(require_roles("student"))):
     code = payload.code.upper().strip()
-    v = await db.vouchers.find_one({"code": code, "active": True})
-    if not v:
-        raise HTTPException(404, "Código inválido ou expirado")
-    if v.get("redeemed_by"):
-        raise HTTPException(400, "Voucher já foi resgatado por outro aluno")
+    v = await db.vouchers.find_one({"code": code})
+    if not v or not v.get("active", True):
+        raise HTTPException(404, "Código inválido ou desativado")
+    # backward compat
+    max_uses = int(v.get("max_uses", 1))
+    uses = int(v.get("uses", 1 if v.get("redeemed_by") else 0))
+    redemptions = v.get("redemptions") or ([{"user_id": v["redeemed_by"]}] if v.get("redeemed_by") else [])
     if v.get("class_id") and v["class_id"] != user.get("class_id"):
         raise HTTPException(403, "Este voucher não é da sua turma")
-    # Atomically claim the voucher
+    if v.get("expires_at"):
+        try:
+            exp = datetime.fromisoformat(v["expires_at"].replace("Z", "+00:00"))
+            if exp < now_utc():
+                raise HTTPException(400, "Voucher expirado")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    if uses >= max_uses:
+        raise HTTPException(400, "Voucher esgotado")
+    if any(r.get("user_id") == user["id"] for r in redemptions):
+        raise HTTPException(400, "Você já resgatou este voucher")
+    # Atomic update with guard against race
+    new_redemption = {"user_id": user["id"], "name": user["name"], "redeemed_at": now_utc().isoformat()}
     res = await db.vouchers.update_one(
-        {"id": v["id"], "redeemed_by": None},
-        {"$set": {"redeemed_by": user["id"], "redeemed_at": now_utc().isoformat()}},
+        {"id": v["id"], "uses": uses, "redemptions.user_id": {"$ne": user["id"]}},
+        {"$inc": {"uses": 1}, "$push": {"redemptions": new_redemption}},
     )
     if res.modified_count == 0:
-        raise HTTPException(400, "Voucher já foi resgatado")
+        raise HTTPException(400, "Voucher acaba de ser resgatado por outro aluno. Tente outro código.")
     await add_transaction(
         user["id"], "voucher", float(v["value"]),
         f"Voucher resgatado: {v.get('description') or v['code']}",
@@ -685,7 +785,9 @@ async def voucher_redeem(payload: VoucherRedeem, user: dict = Depends(require_ro
 
 @api.get("/student/vouchers/history")
 async def voucher_my_history(user: dict = Depends(require_roles("student"))):
-    vs = await db.vouchers.find({"redeemed_by": user["id"]}, {"_id": 0}).sort("redeemed_at", -1).to_list(200)
+    vs = await db.vouchers.find(
+        {"redemptions.user_id": user["id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
     return vs
 
 
