@@ -9,6 +9,7 @@ const NAV = [
   { key: "home", label: "Turmas", to: "/professor" },
   { key: "create", label: "Criar Desafio", to: "/professor/criar" },
   { key: "approvals", label: "Aprovações", to: "/professor/aprovacoes" },
+  { key: "vouchers", label: "🎟️ Vouchers", to: "/professor/vouchers" },
 ];
 
 export function TeacherHome() {

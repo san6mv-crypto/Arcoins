@@ -1,0 +1,45 @@
+{
+  "summary": "Beta-launch validation: CSV bulk-import (login=@firstname, senha=RA) + single-use voucher system. 20/20 backend pytest tests passed. Frontend E2E mostly green (bulk import, voucher creation by teacher+admin, redeem with confetti, RA shown in users list) BUT one CRITICAL UX bug found: the login page <input type=\"email\"> rejects '@firstname' shortcuts via HTML5 validation, blocking imported students from logging in through the UI (works fine via API).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Login.jsx (line 72)",
+        "issue": "Email input uses type=\"email\" which causes browser HTML5 validation to reject '@firstname' (e.g. '@lara') with 'Please enter a part followed by '@''. Imported beta students CANNOT log in via UI. Backend already accepts non-email strings (LoginInput.email is str).",
+        "selector": "[data-testid=\"login-email-input\"]",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_beta_flow.py",
+    "/app/test_reports/pytest/iter3_results.xml"
+  ],
+  "action_items": [
+    "URGENT: change /app/frontend/src/pages/Login.jsx line 72 input from type=\"email\" to type=\"text\" (and update placeholder hint), OR keep type=\"email\" only when input doesn't start with '@'. Also consider adding `noValidate` on the <form>. Otherwise the entire beta @firstname login flow is broken in the browser despite working on backend."
+  ],
+  "critical_code_review_comments": [
+    "Login.jsx hard-codes type=\"email\" — incompatible with the new @firstname login scheme (UX-blocking, CRITICAL).",
+    "/api/admin/students/bulk-import generates avatar seed as `{first}{ra}` which includes the RA (a private identifier) in the URL of the avatar service. Consider hashing or using only first name to avoid leaking RA in third-party requests.",
+    "Voucher `code` is auto-uppercased on backend AND frontend; good. The custom-code regex `^[A-Z0-9_-]{3,20}$` is enforced server-side only — frontend should mirror with maxLength + pattern to give earlier feedback.",
+    "BulkImport.jsx: no client-side preview/validation of CSV (e.g., shows rows before submit). Minor UX improvement.",
+    "server.py is now ~895 lines — splitting into routers (admin.py, vouchers.py, students.py) is increasingly important.",
+    "CORS still allow_credentials=False while httpOnly cookie is set on login (carry-over from iter-2 review) — clean up or use cookie auth.",
+    "No brute-force lockout on /api/auth/login (carry-over from iter-2 playbook gap)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_beta_flow.py (new pytest, 20 tests)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "90% — all flows passed except imported-student UI login blocked by type=email"},
+  "test_credentials": "Used /app/memory/test_credentials.md: admin@arcoins.edu/admin123, professor@arcoins.edu/prof123, marta@arcoins.edu/prof123, aluno@arcoins.edu/aluno123, julia@arcoins.edu/aluno123.",
+  "seed_data_creation": "Test data created during the run (3 imported @users + 2 vouchers + 1 voucher transaction + 15₡ added to Lucas balance) was fully cleaned up at the end. DB returned to seed state.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "20-test pytest file at /app/backend/tests/test_beta_flow.py is fully passing and idempotent (uses uuid suffixes). It auto-cleans created users/vouchers in module teardown. Before re-running, if the suite ever fails mid-way, clean up MongoDB with: db.users.deleteMany({email:/^@/}); db.vouchers.deleteMany({}); db.transactions.deleteMany({type:'voucher'}). Frontend: only blocker is Login.jsx type=email — once fixed, imported students can log in. Bulk-import UI, voucher creation, redeem-with-confetti and admin-vouchers route are all working.",
+  "rca_of_the_issue": "Beta-launch login spec says students log in with '@firstname' + RA. Backend LoginInput.email was correctly changed from EmailStr to str to accept this. However the React login form at Login.jsx:72 still declares <input type=\"email\" required>, which triggers the browser's built-in HTML5 email validator. When the user types '@lara', the browser blocks form submission with an invalid-email tooltip BEFORE the request is sent. Reproduction: open /login, type '@lara' in email field + any password, click 'Entrar' — browser shows 'Please enter a part followed by @'. Fix: change to type=\"text\" (or type=\"email\" only conditionally), and optionally add `noValidate` on the <form>."
+}

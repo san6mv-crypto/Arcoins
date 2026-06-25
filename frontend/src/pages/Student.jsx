@@ -5,6 +5,7 @@ import Confetti from "react-confetti";
 import Shell from "../components/Shell";
 import { useAuth, API } from "../auth";
 import { ArcoinMascot, ArcSymbol } from "../Mascot";
+import VoucherWidget from "../components/VoucherWidget";
 
 const NAV = [
   { key: "home", label: "Início", to: "/aluno" },
@@ -58,6 +59,10 @@ export function StudentHome() {
           <button onClick={refresh} data-testid="refresh-btn" className="arc-btn arc-btn-secondary mt-4 text-sm py-2">Atualizar saldo</button>
         </div>
       </div>
+      <div className="mt-6">
+        <VoucherWidget />
+      </div>
+
       <div className="mt-8 grid md:grid-cols-2 gap-6">
         <div className="arc-card p-6">
           <div className="flex items-center justify-between mb-4">

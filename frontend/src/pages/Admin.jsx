@@ -3,11 +3,13 @@ import axios from "axios";
 import Shell from "../components/Shell";
 import { API } from "../auth";
 import { ArcSymbol } from "../Mascot";
+import BulkImport from "../components/BulkImport";
 
 const NAV = [
   { key: "home", label: "Visão Geral", to: "/admin" },
   { key: "users", label: "Usuários", to: "/admin/usuarios" },
   { key: "classes", label: "Turmas", to: "/admin/turmas" },
+  { key: "vouchers", label: "🎟️ Vouchers", to: "/admin/vouchers" },
   { key: "store", label: "Loja", to: "/admin/loja" },
   { key: "config", label: "Configurações", to: "/admin/config" },
 ];
@@ -128,6 +130,8 @@ export function AdminUsers() {
     <Shell nav={NAV} title="Usuários">
       <h2 className="font-fredoka font-bold text-2xl text-arc-text mb-6">👥 Gestão de Usuários</h2>
 
+      <BulkImport classes={classes} onDone={load} />
+
       {msg && (
         <div className={`mb-4 p-4 rounded-2xl font-semibold ${msg.type === "success" ? "bg-arc-success text-arc-text" : "bg-pink-100 text-arc-accent"}`} data-testid="user-msg">
           {msg.text}
@@ -231,6 +235,7 @@ export function AdminUsers() {
                     color: "#fff"
                   }}>{u.role === "student" ? "aluno" : u.role === "teacher" ? "professor" : "admin"}</span>
                   {u.role === "student" && <div className="font-fredoka font-bold text-arc-primary w-20 text-right text-sm"><ArcSymbol /> {u.balance?.toFixed(2)}</div>}
+                  {u.role === "student" && u.ra && <div className="text-xs text-arc-muted font-mono">RA {u.ra}</div>}
                   <button onClick={() => remove(u)} data-testid={`remove-${u.email}`} className="text-arc-accent font-bold text-xs hover:underline">Remover</button>
                 </div>
               ))}

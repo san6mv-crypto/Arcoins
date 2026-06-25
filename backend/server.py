@@ -5,14 +5,19 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import re
+import csv
 import uuid
 import logging
+import secrets
+import unicodedata
 from datetime import datetime, timezone, timedelta, date
+from io import StringIO
 from typing import List, Optional, Literal
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -83,7 +88,7 @@ Role = Literal["student", "teacher", "admin"]
 
 
 class LoginInput(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
@@ -115,6 +120,17 @@ class CreateUserInput(BaseModel):
 class CreateClassInput(BaseModel):
     name: str
     teacher_id: Optional[str] = None
+
+
+class VoucherCreate(BaseModel):
+    value: float
+    description: Optional[str] = ""
+    code: Optional[str] = None
+    class_id: Optional[str] = None
+
+
+class VoucherRedeem(BaseModel):
+    code: str
 
 
 class PurchaseInput(BaseModel):
@@ -151,7 +167,24 @@ async def user_to_public(u: dict) -> dict:
         "avatar": u.get("avatar"), "class_id": u.get("class_id"),
         "balance": round(u.get("balance", 0), 2),
         "savings": round(u.get("savings", 0), 2),
+        "ra": u.get("ra"),
+        "password_locked": bool(u.get("password_locked", False)),
     }
+
+
+def strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+def normalize_first_name(full_name: str) -> str:
+    base = strip_accents(full_name.strip()).lower()
+    parts = re.findall(r"[a-z0-9]+", base)
+    return parts[0] if parts else "aluno"
+
+
+def gen_voucher_code(length: int = 6) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 @api.post("/auth/login")
@@ -455,6 +488,207 @@ async def create_class(payload: CreateClassInput, user: dict = Depends(require_r
     return klass
 
 
+# ---------- Bulk Import Students via CSV ----------
+@api.post("/admin/students/bulk-import")
+async def bulk_import_students(
+    file: UploadFile = File(...),
+    class_id: Optional[str] = Form(None),
+    initial_balance: Optional[float] = Form(0),
+    user: dict = Depends(require_roles("admin")),
+):
+    """
+    Importa alunos via CSV. Cabeçalhos esperados (em qualquer ordem, case-insensitive):
+    - nome (ou name)
+    - ra (ou registration)
+    Login do aluno = '@<primeiroNome>' (ou '@<primeiroNome>.<RA>' em caso de duplicidade).
+    Senha do aluno = RA (sem possibilidade de troca).
+    """
+    if class_id:
+        klass = await db.classes.find_one({"id": class_id})
+        if not klass:
+            raise HTTPException(400, "Turma inválida")
+
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("latin-1")
+        except Exception:
+            raise HTTPException(400, "Não foi possível ler o CSV. Use codificação UTF-8.")
+
+    sniffer = csv.Sniffer()
+    sample = text[:2048]
+    try:
+        dialect = sniffer.sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(StringIO(text), dialect=dialect)
+    if not reader.fieldnames:
+        raise HTTPException(400, "CSV vazio ou sem cabeçalho")
+
+    # normalize headers
+    headers = {h.strip().lower(): h for h in reader.fieldnames}
+    name_key = headers.get("nome") or headers.get("name") or headers.get("aluno")
+    ra_key = headers.get("ra") or headers.get("registration") or headers.get("matrícula") or headers.get("matricula")
+    if not name_key or not ra_key:
+        raise HTTPException(400, f"CSV precisa ter colunas 'nome' e 'ra'. Encontradas: {list(reader.fieldnames)}")
+
+    created = []
+    skipped = []
+    initial_balance = float(initial_balance or 0)
+
+    for idx, row in enumerate(reader, start=2):
+        name = (row.get(name_key) or "").strip()
+        ra = (row.get(ra_key) or "").strip()
+        if not name or not ra:
+            skipped.append({"line": idx, "reason": "nome ou RA vazio", "name": name, "ra": ra})
+            continue
+        if len(ra) < 3:
+            skipped.append({"line": idx, "reason": "RA muito curto (mínimo 3 caracteres)", "name": name, "ra": ra})
+            continue
+
+        # Skip if RA already exists
+        ra_exists = await db.users.find_one({"ra": ra})
+        if ra_exists:
+            skipped.append({"line": idx, "reason": "RA já cadastrado", "name": name, "ra": ra})
+            continue
+
+        # Generate login: @firstname, with RA suffix if duplicate
+        first = normalize_first_name(name)
+        candidate = f"@{first}"
+        if await db.users.find_one({"email": candidate}):
+            candidate = f"@{first}.{ra}"
+            if await db.users.find_one({"email": candidate}):
+                skipped.append({"line": idx, "reason": "login não pôde ser gerado (duplicado)", "name": name, "ra": ra})
+                continue
+
+        uid = str(uuid.uuid4())
+        doc = {
+            "id": uid,
+            "email": candidate,                 # used as login key
+            "password_hash": hash_password(ra),
+            "name": name,
+            "role": "student",
+            "class_id": class_id,
+            "ra": ra,
+            "password_locked": True,            # student cannot change own password
+            "avatar": f"https://api.dicebear.com/7.x/adventurer/svg?seed={first}{ra}",
+            "balance": initial_balance,
+            "savings": 0.0,
+            "created_at": now_utc().isoformat(),
+        }
+        await db.users.insert_one(doc)
+        if initial_balance > 0:
+            await db.transactions.insert_one({
+                "id": str(uuid.uuid4()),
+                "user_id": uid,
+                "type": "adjustment",
+                "amount": initial_balance,
+                "description": "Saldo inicial de boas-vindas",
+                "created_at": now_utc().isoformat(),
+                "meta": {},
+            })
+        created.append({"name": name, "ra": ra, "login": candidate})
+
+    return {
+        "ok": True,
+        "created_count": len(created),
+        "skipped_count": len(skipped),
+        "created": created,
+        "skipped": skipped,
+    }
+
+
+# ---------- Vouchers ----------
+@api.post("/vouchers")
+async def voucher_create(payload: VoucherCreate, user: dict = Depends(require_roles("teacher", "admin"))):
+    if payload.value <= 0:
+        raise HTTPException(400, "Valor deve ser positivo")
+    code = (payload.code or gen_voucher_code()).upper().strip()
+    if not re.match(r"^[A-Z0-9_-]{3,20}$", code):
+        raise HTTPException(400, "Código inválido. Use 3-20 caracteres alfanuméricos.")
+    if await db.vouchers.find_one({"code": code}):
+        raise HTTPException(400, "Código já existe. Escolha outro.")
+    if payload.class_id:
+        klass = await db.classes.find_one({"id": payload.class_id})
+        if not klass:
+            raise HTTPException(400, "Turma inválida")
+    v = {
+        "id": str(uuid.uuid4()),
+        "code": code,
+        "value": float(payload.value),
+        "description": (payload.description or "").strip(),
+        "class_id": payload.class_id,
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "redeemed_by": None,
+        "redeemed_at": None,
+        "active": True,
+        "created_at": now_utc().isoformat(),
+    }
+    await db.vouchers.insert_one(v)
+    v.pop("_id", None)
+    return v
+
+
+@api.get("/vouchers")
+async def voucher_list(user: dict = Depends(require_roles("teacher", "admin"))):
+    q = {} if user["role"] == "admin" else {"created_by": user["id"]}
+    vouchers = await db.vouchers.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # enrich with redeemer name
+    redeemed_ids = [v["redeemed_by"] for v in vouchers if v.get("redeemed_by")]
+    redeemers = await db.users.find({"id": {"$in": redeemed_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(500)
+    rn = {r["id"]: r["name"] for r in redeemers}
+    for v in vouchers:
+        v["redeemed_by_name"] = rn.get(v.get("redeemed_by"))
+    return vouchers
+
+
+@api.delete("/vouchers/{voucher_id}")
+async def voucher_delete(voucher_id: str, user: dict = Depends(require_roles("teacher", "admin"))):
+    v = await db.vouchers.find_one({"id": voucher_id})
+    if not v:
+        raise HTTPException(404, "Voucher não encontrado")
+    if user["role"] != "admin" and v.get("created_by") != user["id"]:
+        raise HTTPException(403, "Você só pode remover seus próprios vouchers")
+    if v.get("redeemed_by"):
+        raise HTTPException(400, "Voucher já resgatado não pode ser removido")
+    await db.vouchers.delete_one({"id": voucher_id})
+    return {"ok": True}
+
+
+@api.post("/student/vouchers/redeem")
+async def voucher_redeem(payload: VoucherRedeem, user: dict = Depends(require_roles("student"))):
+    code = payload.code.upper().strip()
+    v = await db.vouchers.find_one({"code": code, "active": True})
+    if not v:
+        raise HTTPException(404, "Código inválido ou expirado")
+    if v.get("redeemed_by"):
+        raise HTTPException(400, "Voucher já foi resgatado por outro aluno")
+    if v.get("class_id") and v["class_id"] != user.get("class_id"):
+        raise HTTPException(403, "Este voucher não é da sua turma")
+    # Atomically claim the voucher
+    res = await db.vouchers.update_one(
+        {"id": v["id"], "redeemed_by": None},
+        {"$set": {"redeemed_by": user["id"], "redeemed_at": now_utc().isoformat()}},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(400, "Voucher já foi resgatado")
+    await add_transaction(
+        user["id"], "voucher", float(v["value"]),
+        f"Voucher resgatado: {v.get('description') or v['code']}",
+        {"voucher_id": v["id"], "code": v["code"]},
+    )
+    return {"ok": True, "value": v["value"], "description": v.get("description") or "", "code": v["code"]}
+
+
+@api.get("/student/vouchers/history")
+async def voucher_my_history(user: dict = Depends(require_roles("student"))):
+    vs = await db.vouchers.find({"redeemed_by": user["id"]}, {"_id": 0}).sort("redeemed_at", -1).to_list(200)
+    return vs
+
+
 @api.get("/admin/store")
 async def admin_store(user: dict = Depends(require_roles("admin"))):
     return await db.store_items.find({}, {"_id": 0}).to_list(200)
@@ -520,6 +754,8 @@ async def run_allowance(user: dict = Depends(require_roles("admin"))):
 async def seed_data():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("id", unique=True)
+    await db.users.create_index("ra", sparse=True)
+    await db.vouchers.create_index("code", unique=True)
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@arcoins.edu").lower()
     admin_pass = os.environ.get("ADMIN_PASSWORD", "admin123")

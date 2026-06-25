@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import { StudentHome, StudentExtrato, StudentChallenges, StudentStore, StudentSavings } from "./pages/Student";
 import { TeacherHome, TeacherCreate, TeacherApprovals } from "./pages/Teacher";
 import { AdminHome, AdminUsers, AdminClasses, AdminStore, AdminConfig } from "./pages/Admin";
+import Vouchers from "./pages/Vouchers";
 import "./index.css";
 
 function Guard({ roles, children }) {
@@ -41,9 +42,11 @@ export default function App() {
           <Route path="/professor" element={<Guard roles={["teacher"]}><TeacherHome /></Guard>} />
           <Route path="/professor/criar" element={<Guard roles={["teacher"]}><TeacherCreate /></Guard>} />
           <Route path="/professor/aprovacoes" element={<Guard roles={["teacher"]}><TeacherApprovals /></Guard>} />
+          <Route path="/professor/vouchers" element={<Guard roles={["teacher"]}><Vouchers /></Guard>} />
           <Route path="/admin" element={<Guard roles={["admin"]}><AdminHome /></Guard>} />
           <Route path="/admin/usuarios" element={<Guard roles={["admin"]}><AdminUsers /></Guard>} />
           <Route path="/admin/turmas" element={<Guard roles={["admin"]}><AdminClasses /></Guard>} />
+          <Route path="/admin/vouchers" element={<Guard roles={["admin"]}><Vouchers /></Guard>} />
           <Route path="/admin/loja" element={<Guard roles={["admin"]}><AdminStore /></Guard>} />
           <Route path="/admin/config" element={<Guard roles={["admin"]}><AdminConfig /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
