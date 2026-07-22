@@ -6,6 +6,8 @@ import { StudentHome, StudentExtrato, StudentChallenges, StudentStore, StudentSa
 import { TeacherHome, TeacherCreate, TeacherApprovals } from "./pages/Teacher";
 import { AdminHome, AdminUsers, AdminClasses, AdminStore, AdminConfig } from "./pages/Admin";
 import Vouchers from "./pages/Vouchers";
+import StudentTransfer from "./pages/StudentTransfer";
+import Attendance from "./pages/Attendance";
 import "./index.css";
 
 function Guard({ roles, children }) {
@@ -39,14 +41,17 @@ export default function App() {
           <Route path="/aluno/desafios" element={<Guard roles={["student"]}><StudentChallenges /></Guard>} />
           <Route path="/aluno/loja" element={<Guard roles={["student"]}><StudentStore /></Guard>} />
           <Route path="/aluno/poupanca" element={<Guard roles={["student"]}><StudentSavings /></Guard>} />
+          <Route path="/aluno/transferir" element={<Guard roles={["student"]}><StudentTransfer /></Guard>} />
           <Route path="/professor" element={<Guard roles={["teacher"]}><TeacherHome /></Guard>} />
           <Route path="/professor/criar" element={<Guard roles={["teacher"]}><TeacherCreate /></Guard>} />
           <Route path="/professor/aprovacoes" element={<Guard roles={["teacher"]}><TeacherApprovals /></Guard>} />
           <Route path="/professor/vouchers" element={<Guard roles={["teacher"]}><Vouchers /></Guard>} />
+          <Route path="/professor/presenca" element={<Guard roles={["teacher"]}><Attendance /></Guard>} />
           <Route path="/admin" element={<Guard roles={["admin"]}><AdminHome /></Guard>} />
           <Route path="/admin/usuarios" element={<Guard roles={["admin"]}><AdminUsers /></Guard>} />
           <Route path="/admin/turmas" element={<Guard roles={["admin"]}><AdminClasses /></Guard>} />
           <Route path="/admin/vouchers" element={<Guard roles={["admin"]}><Vouchers /></Guard>} />
+          <Route path="/admin/presenca" element={<Guard roles={["admin"]}><Attendance /></Guard>} />
           <Route path="/admin/loja" element={<Guard roles={["admin"]}><AdminStore /></Guard>} />
           <Route path="/admin/config" element={<Guard roles={["admin"]}><AdminConfig /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />

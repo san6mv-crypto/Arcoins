@@ -143,6 +143,19 @@ class VoucherRedeem(BaseModel):
     code: str
 
 
+class TransferInput(BaseModel):
+    ra: str
+    amount: float
+    message: Optional[str] = ""
+
+
+class AttendanceMark(BaseModel):
+    class_id: str
+    date: str  # YYYY-MM-DD
+    present_ids: List[str] = []
+    absent_ids: List[str] = []
+
+
 class PurchaseInput(BaseModel):
     item_id: str
 
@@ -154,6 +167,7 @@ class SavingsInput(BaseModel):
 class ConfigModel(BaseModel):
     daily_allowance: float = 10.0
     savings_rate: float = 0.02
+    attendance_required: Optional[bool] = False
 
 
 async def add_transaction(user_id: str, ttype: str, amount: float, description: str, meta: dict = None):
@@ -791,6 +805,110 @@ async def voucher_my_history(user: dict = Depends(require_roles("student"))):
     return vs
 
 
+# ---------- Transferências entre alunos ----------
+@api.post("/student/transfer")
+async def student_transfer(payload: TransferInput, user: dict = Depends(require_roles("student"))):
+    ra = payload.ra.strip()
+    amount = float(payload.amount)
+    if amount <= 0:
+        raise HTTPException(400, "Valor deve ser positivo")
+    if amount > 10000:
+        raise HTTPException(400, "Valor máximo por transferência é ₡ 10.000")
+    if ra == user.get("ra"):
+        raise HTTPException(400, "Você não pode enviar para si mesmo")
+    receiver = await db.users.find_one({"ra": ra, "role": "student"})
+    if not receiver:
+        raise HTTPException(404, "Aluno com esse RA não encontrado")
+    if receiver["id"] == user["id"]:
+        raise HTTPException(400, "Você não pode enviar para si mesmo")
+    fresh = await db.users.find_one({"id": user["id"]})
+    if fresh["balance"] < amount:
+        raise HTTPException(400, "Saldo insuficiente")
+    msg = (payload.message or "").strip()[:120]
+    desc_send = f"Transferência enviada para {receiver['name']}" + (f' · "{msg}"' if msg else "")
+    desc_recv = f"Recebido de {user['name']}" + (f' · "{msg}"' if msg else "")
+    meta = {"peer_id": receiver["id"], "peer_name": receiver["name"], "message": msg}
+    meta_recv = {"peer_id": user["id"], "peer_name": user["name"], "message": msg}
+    await add_transaction(user["id"], "transfer_out", -amount, desc_send, meta)
+    await add_transaction(receiver["id"], "transfer_in", amount, desc_recv, meta_recv)
+    updated = await db.users.find_one({"id": user["id"]}, {"_id": 0, "balance": 1, "name": 1})
+    return {
+        "ok": True,
+        "receiver_name": receiver["name"],
+        "amount": amount,
+        "new_balance": round(updated.get("balance", 0), 2),
+    }
+
+
+# ---------- Presença (Attendance) ----------
+@api.post("/attendance/mark")
+async def attendance_mark(payload: AttendanceMark, user: dict = Depends(require_roles("teacher", "admin"))):
+    # Validate class access
+    klass = await db.classes.find_one({"id": payload.class_id})
+    if not klass:
+        raise HTTPException(404, "Turma não encontrada")
+    if user["role"] == "teacher" and klass.get("teacher_id") != user["id"]:
+        raise HTTPException(403, "Você não é responsável por esta turma")
+    # normalize date
+    try:
+        d = datetime.strptime(payload.date, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        raise HTTPException(400, "Data inválida (YYYY-MM-DD)")
+    updates = []
+    all_ids = set(payload.present_ids) | set(payload.absent_ids)
+    for sid in all_ids:
+        present = sid in payload.present_ids
+        await db.attendance.update_one(
+            {"user_id": sid, "date": d},
+            {"$set": {
+                "id": str(uuid.uuid4()),
+                "user_id": sid,
+                "class_id": payload.class_id,
+                "date": d,
+                "present": present,
+                "marked_by": user["id"],
+                "marked_at": now_utc().isoformat(),
+            }},
+            upsert=True,
+        )
+        updates.append({"user_id": sid, "present": present})
+    return {"ok": True, "date": d, "class_id": payload.class_id, "count": len(updates)}
+
+
+@api.get("/attendance/class/{class_id}")
+async def attendance_get_class(class_id: str, date: Optional[str] = None,
+                                user: dict = Depends(require_roles("teacher", "admin"))):
+    klass = await db.classes.find_one({"id": class_id})
+    if not klass:
+        raise HTTPException(404, "Turma não encontrada")
+    if user["role"] == "teacher" and klass.get("teacher_id") != user["id"]:
+        raise HTTPException(403, "Você não é responsável por esta turma")
+    d = date or datetime.now(timezone.utc).date().isoformat()
+    try:
+        datetime.strptime(d, "%Y-%m-%d")
+    except Exception:
+        raise HTTPException(400, "Data inválida")
+    students = await db.users.find(
+        {"role": "student", "class_id": class_id},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(500)
+    recs = await db.attendance.find({"class_id": class_id, "date": d}, {"_id": 0}).to_list(500)
+    rmap = {r["user_id"]: r for r in recs}
+    for s in students:
+        r = rmap.get(s["id"])
+        s["attendance"] = {
+            "marked": bool(r),
+            "present": r["present"] if r else None,
+        }
+    return {"class_id": class_id, "date": d, "students": students}
+
+
+@api.get("/student/attendance")
+async def student_attendance_my(user: dict = Depends(require_roles("student"))):
+    recs = await db.attendance.find({"user_id": user["id"]}, {"_id": 0}).sort("date", -1).to_list(100)
+    return recs
+
+
 @api.get("/admin/store")
 async def admin_store(user: dict = Depends(require_roles("admin"))):
     return await db.store_items.find({}, {"_id": 0}).to_list(200)
@@ -829,7 +947,11 @@ async def get_config(user: dict = Depends(require_roles("admin"))):
 async def set_config(payload: ConfigModel, user: dict = Depends(require_roles("admin"))):
     await db.config.update_one(
         {"id": "main"},
-        {"$set": {"daily_allowance": payload.daily_allowance, "savings_rate": payload.savings_rate}},
+        {"$set": {
+            "daily_allowance": payload.daily_allowance,
+            "savings_rate": payload.savings_rate,
+            "attendance_required": bool(payload.attendance_required),
+        }},
         upsert=True,
     )
     return {"ok": True}
@@ -837,12 +959,23 @@ async def set_config(payload: ConfigModel, user: dict = Depends(require_roles("a
 
 @api.post("/admin/run-allowance")
 async def run_allowance(user: dict = Depends(require_roles("admin"))):
-    cfg = await db.config.find_one({"id": "main"})
-    amount = cfg["daily_allowance"] if cfg else 10.0
-    students = await db.users.find({"role": "student"}).to_list(1000)
+    cfg = await db.config.find_one({"id": "main"}) or {}
+    amount = cfg.get("daily_allowance", 10.0)
+    attendance_required = bool(cfg.get("attendance_required", False))
     today = date.today().isoformat()
+    students = await db.users.find({"role": "student"}).to_list(1000)
+
+    present_ids = set()
+    if attendance_required:
+        recs = await db.attendance.find({"date": today, "present": True}, {"_id": 0, "user_id": 1}).to_list(2000)
+        present_ids = {r["user_id"] for r in recs}
+
     count = 0
+    skipped_absent = 0
     for s in students:
+        if attendance_required and s["id"] not in present_ids:
+            skipped_absent += 1
+            continue
         existing = await db.transactions.find_one({
             "user_id": s["id"], "type": "allowance", "meta.date": today,
         })
@@ -850,7 +983,14 @@ async def run_allowance(user: dict = Depends(require_roles("admin"))):
             continue
         await add_transaction(s["id"], "allowance", amount, "Mesada diária", {"date": today})
         count += 1
-    return {"ok": True, "distributed_to": count, "amount": amount}
+    return {
+        "ok": True,
+        "distributed_to": count,
+        "amount": amount,
+        "skipped_absent": skipped_absent,
+        "attendance_required": attendance_required,
+        "date": today,
+    }
 
 
 async def seed_data():

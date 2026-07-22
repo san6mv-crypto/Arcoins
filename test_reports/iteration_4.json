@@ -1,0 +1,41 @@
+{
+  "summary": "Beta-2 validation of student-to-student RA transfers, attendance system, and allowance-gated-by-attendance. 20/20 backend pytest tests pass (transfer happy-path + all error cases; attendance RBAC + upsert + student history; config attendance_required; run-allowance gated + idempotent + ungated behavior). Frontend E2E green: /aluno/transferir works (success msg + confetti, invalid RA shows 'não encontrado'); /professor/presenca marks + saves; /admin/config toggles cfg-attendance and persists; /admin/presenca shows all 4 classes and admin can save attendance in any of them.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_beta2_transfer_attendance.py",
+    "/app/backend/tests/test_beta_flow.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "(carry-over, non-blocking) Login.jsx now uses type=text — regression is fixed for @firstname login.",
+    "(carry-over, code hygiene) server.py is 1100+ lines — split into routers (attendance.py, transfers.py, admin.py, vouchers.py).",
+    "(minor UX) Attendance page: reset local attendance state when class_id changes to avoid stale bg-highlight on students of the new class after switching classes fast.",
+    "(minor) TransferInput.amount accepts float but server rejects >10000 with clear message; frontend also restricts by user.balance via max=. Both fine."
+  ],
+  "critical_code_review_comments": [
+    "Idempotency for run-allowance uses meta.date=today; works well but the check is O(N) — for large schools consider an index on (user_id, type, meta.date) or a dated allowance_runs collection.",
+    "Transfer endpoint credits/debits in two separate add_transaction calls without a Mongo transaction; a crash between the two would leave money missing/duplicated. For production consider a session/txn or event-sourced ledger with a compensating action.",
+    "attendance_mark generates a new uuid on every upsert $set (line 864), overwriting the previous id. Not harmful but the 'id' field loses stability across re-marks — either keep it in $setOnInsert or drop it.",
+    "GET /api/attendance/class/{class_id} returns full user documents (including balance/savings) to teachers of the class. Consider projecting only fields needed for the UI (name, avatar, ra, id, attendance) to reduce data leak and payload size.",
+    "add_transaction updates balance with $inc but returns the txn dict that still contains an in-memory 'user_id'; downstream JSON encoders may include Mongo _id if inserted before return. Confirmed callers all strip _id, but a helper `serialize_txn(t)` would DRY this up.",
+    "CORS still has allow_credentials=False despite login setting an httpOnly cookie (carry-over)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_beta2_transfer_attendance.py (new, 20 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% (all 4 flows: transfer OK + errors, teacher attendance save, admin config toggle+persist, admin attendance access to any class)"},
+  "test_credentials": "Used /app/memory/test_credentials.md: admin@arcoins.edu/admin123, professor@arcoins.edu/prof123, marta@arcoins.edu/prof123, aluno@arcoins.edu/aluno123. Created via bulk-import for transfer tests: @uitestsender/8880001, @uitestreceiver/8880002 (cleaned).",
+  "seed_data_creation": "For UI test: 2 students via bulk-import (RAs 8880001/8880002, initial_balance=200) in 7A. Deleted after run. For pytest: 2 more temp students per module (unique RAs) with initial_balance=100 in 7A, deleted in teardown. Config attendance_required left as false (restored). Attendance rows for today in 7A/8B remain (harmless, no admin cleanup endpoint).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_beta2_transfer_attendance.py is idempotent (uuid-suffixed RAs, teardown deletes users and restores config). Note: this test intentionally toggles attendance_required=True then False and depends on 'today' allowance not having been distributed yet. If run late in the same UTC day AFTER a manual run-allowance, some assertions on distributed_to>0 may be softer, but the important assertion (absent student did NOT receive allowance) will still hold. To fully reset for a clean re-run: db.transactions.deleteMany({type:'allowance', 'meta.date': today}); db.attendance.deleteMany({date: today}).",
+  "rca_of_the_issue": "N/A — no bugs found in the new Beta-2 features. During UI testing, one initial false-positive occurred (admin classes select appeared empty) — that was purely a timing issue in the playwright script (didn't wait for /api/teacher/classes to resolve); after adding a 2.5s wait the dropdown correctly listed all 4 classes and admin could save attendance in 8B. Feature works as designed."
+}

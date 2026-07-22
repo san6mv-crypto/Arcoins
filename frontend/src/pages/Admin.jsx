@@ -9,6 +9,7 @@ const NAV = [
   { key: "home", label: "Visão Geral", to: "/admin" },
   { key: "users", label: "Usuários", to: "/admin/usuarios" },
   { key: "classes", label: "Turmas", to: "/admin/turmas" },
+  { key: "attendance", label: "✅ Presença", to: "/admin/presenca" },
   { key: "vouchers", label: "🎟️ Vouchers", to: "/admin/vouchers" },
   { key: "store", label: "Loja", to: "/admin/loja" },
   { key: "config", label: "Configurações", to: "/admin/config" },
@@ -368,7 +369,11 @@ export function AdminConfig() {
   const [msg, setMsg] = useState("");
   useEffect(() => { axios.get(`${API}/admin/config`).then((r) => setCfg(r.data)); }, []);
   const save = async () => {
-    await axios.post(`${API}/admin/config`, { daily_allowance: parseFloat(cfg.daily_allowance), savings_rate: parseFloat(cfg.savings_rate) });
+    await axios.post(`${API}/admin/config`, {
+      daily_allowance: parseFloat(cfg.daily_allowance),
+      savings_rate: parseFloat(cfg.savings_rate),
+      attendance_required: !!cfg.attendance_required,
+    });
     setMsg("✅ Configurações salvas!"); setTimeout(() => setMsg(""), 3000);
   };
   if (!cfg) return <Shell nav={NAV} title="Configurações">Carregando...</Shell>;
@@ -386,6 +391,19 @@ export function AdminConfig() {
           <label className="text-sm font-semibold text-arc-text block mb-2">Taxa de rendimento da poupança (diária, 0.02 = 2%)</label>
           <input data-testid="cfg-savings" type="number" step="0.001" className="arc-input" value={cfg.savings_rate} onChange={(e) => setCfg({ ...cfg, savings_rate: e.target.value })} />
         </div>
+        <label className="flex items-start gap-3 p-4 rounded-2xl bg-arc cursor-pointer" data-testid="cfg-attendance-label">
+          <input
+            data-testid="cfg-attendance"
+            type="checkbox"
+            className="mt-1 w-5 h-5 accent-current text-arc-primary"
+            checked={!!cfg.attendance_required}
+            onChange={(e) => setCfg({ ...cfg, attendance_required: e.target.checked })}
+          />
+          <div>
+            <div className="font-semibold text-arc-text">Mesada apenas para alunos presentes ✅</div>
+            <div className="text-xs text-arc-muted mt-1">Quando ativado, ao clicar em "Distribuir mesada" na Visão Geral, apenas os alunos marcados como presentes no dia receberão. Ausentes ficam de fora — assim a plataforma incentiva a frequência escolar.</div>
+          </div>
+        </label>
         <button data-testid="save-cfg" onClick={save} className="arc-btn arc-btn-primary w-full">Salvar</button>
       </div>
     </Shell>

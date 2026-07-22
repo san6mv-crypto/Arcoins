@@ -13,6 +13,7 @@ const NAV = [
   { key: "desafios", label: "Desafios", to: "/aluno/desafios" },
   { key: "loja", label: "Loja", to: "/aluno/loja" },
   { key: "poupanca", label: "Poupança", to: "/aluno/poupanca" },
+  { key: "transferir", label: "🔁 Transferir", to: "/aluno/transferir" },
 ];
 
 function Balance({ balance, savings }) {
