@@ -1,80 +1,85 @@
 # Arcoins - PRD (Product Requirements Document)
 
 ## Problema original
-Plataforma Educacional Financeira "Arcoins" — banco escolar digital que ensina educação financeira para alunos do ensino fundamental II e médio usando moeda fictícia "Arc" (₡). Inclui mesada diária, desafios educacionais, loja escolar virtual e poupança simulada. 3 perfis: Aluno, Professor, Admin escolar.
+Plataforma Educacional Financeira "Arcoins" — banco escolar digital que ensina educação financeira para alunos do ensino fundamental II e médio usando moeda fictícia "Arc" (₡). 3 perfis: Aluno, Professor, Admin escolar.
 
 ## User Personas
-- **Aluno (11-17 anos)**: recebe mesada, completa desafios, compra na loja, poupa.
-- **Professor**: gerencia turmas, cria desafios, aprova submissões.
-- **Admin escolar**: gerencia usuários/loja/turmas, configura mesada, distribui mesada diária, vê relatórios.
+- **Aluno (11-17 anos)**: recebe mesada, completa desafios, compra na loja, poupa, transfere Arc, resgata vouchers
+- **Professor**: gerencia turmas, cria desafios, aprova submissões, marca presença, cria vouchers
+- **Admin escolar**: gestão global, cadastra em massa via CSV, configura mesada condicional, cria vouchers, marca presença
 
 ## Requisitos core
 - Moeda fictícia "Arc" com símbolo ₡
-- 3 papéis com permissões distintas (RBAC)
-- Mesada diária idempotente
+- 3 papéis com RBAC
+- Mesada diária idempotente (opcionalmente condicional à presença)
 - Loja com estoque e saldo validado
 - Poupança simulada
 - Desafios: criar → submeter → aprovar → creditar
-- Aparência lúdica (target 11-17 anos)
-- **Admin cria contas para professores e alunos (com senha)**
-- Autenticação estável com JWT + bcrypt
+- Aparência lúdica
+- Admin cria contas manualmente E via CSV com login `@primeiroNome` + senha=RA
+- Autenticação estável (JWT + bcrypt)
+- Transferências P2P entre alunos via RA
+- Vouchers uso único (professor/admin)
+- Presença condicionando mesada
 
 ## Stack
 - Backend: FastAPI + MongoDB (Motor) + JWT (PyJWT) + bcrypt
 - Frontend: React 19 + React Router 7 + Tailwind + Framer Motion + react-confetti
 - Fonts: Fredoka (títulos) + Nunito (corpo)
-- Paleta: #00B4D8, #FFBE0B, #FF006E, #06D6A0
 
 ## Implementado
 
-### Janeiro 2026 — MVP navegável
-- 3 dashboards (Aluno/Professor/Admin) com 13 telas
+### Jan/2026 — MVP navegável
+- 3 dashboards (Aluno/Professor/Admin), 13 telas iniciais
 - Mascote "Arco" (SVG)
 - Auth JWT + bcrypt + RBAC
-- Seed idempotente: 1 admin + 2 professores + 8 alunos + 2 turmas + 5 desafios + 6 itens loja
-- Documentação `ARCHITECTURE.md` + `test_credentials.md`
+- Seed idempotente
 
-### Junho 2026 — Gestão de usuários + setup local
-- ✅ Backend: `POST /api/admin/users` (com validação de e-mail duplicado, senha mín 4 chars, turma existente)
-- ✅ Backend: `DELETE /api/admin/users/{id}` (com proteção contra auto-remoção)
-- ✅ Backend: `GET/POST /api/admin/classes` (com proteção contra duplicidade)
-- ✅ Frontend: tela `/admin/usuarios` com formulário de criação (seletor visual de role, campos contextualizados para aluno) + filtros (Todos/Admin/Professores/Alunos) + remover usuário
-- ✅ Frontend: tela `/admin/turmas` com formulário de criação + lista de turmas (com professor e contagem de alunos)
-- ✅ Saldo inicial cria transação "Saldo inicial de boas-vindas" no extrato do aluno
-- ✅ `README.md` com instruções completas para rodar localmente (Python venv + yarn + Mongo Docker)
-- ✅ Testes 100% (14/14 backend pytest + 100% frontend E2E)
-  - Admin cria aluno → aluno loga → vê saldo inicial corretamente
-  - Validações: e-mail duplicado, senha curta, turma inválida, auto-remoção
-  - JWT estável em múltiplas requisições
+### Jun/2026 — Gestão de usuários + setup local
+- Criação manual de usuários pelo admin, criação de turmas
+- README para rodar localmente
+
+### Jun/2026 — Beta-1: CSV bulk import + Vouchers
+- Import CSV alunos: login `@firstname`, senha=RA, `password_locked=true`
+- Duplicidade: `@nome.<RA>`
+- Vouchers uso único (professor/admin criam, aluno resgata)
+- Widget de resgate no dashboard do aluno (com confetti)
+- Fix: campo de login mudou de type=email para type=text (para aceitar `@login`)
+
+### Jul/2026 — Beta-2: Transferências P2P + Presença + Mesada condicional
+- ✅ `POST /api/student/transfer` (RA + valor + mensagem) — cria transfer_out/in
+- ✅ Validações: RA inexistente, saldo insuficiente, auto-envio, valor inválido, máx 10k
+- ✅ Página `/aluno/transferir` com histórico das últimas transferências
+- ✅ `POST /api/attendance/mark` + `GET /api/attendance/class/{class_id}` — professor marca só sua turma, admin todas
+- ✅ Página `/professor/presenca` e `/admin/presenca` com Presente/Ausente por aluno
+- ✅ Config `attendance_required` + toggle na tela de configurações
+- ✅ `POST /api/admin/run-allowance` respeita presença quando ativo
+- ✅ Testes 20/20 backend + 100% frontend
 
 ## Backlog
 
 ### P1
-- Tela "Meu Perfil" para usuário trocar própria senha/email
-- Cron job de mesada diária automática
-- Rendimento real da poupança (job diário)
+- Tela "Meu Perfil" (usuário não-locked troca senha/e-mail)
+- Botão "Imprimir credenciais dos alunos" (PDF/CSV pós-import) ← próximo
+- Edição de vouchers (data de validade, multi-uso) ← próximo
+- Cron job de mesada automática diária
 
 ### P2
-- Relatórios exportáveis (CSV/PDF)
-- Edição de usuário existente pelo admin (não só remover)
-- Reset de senha pelo admin
-- Bulk import de alunos via CSV
-- Rate limiting no login (anti-brute force)
-- Refactor server.py em routers (auth/admin/teacher/student)
+- Split de `server.py` em routers (auth/admin/teacher/student/vouchers/attendance/transfers)
+- Mongo transactions para transferência atômica
+- Índices otimizados: (user_id, type, meta.date) para run-allowance
+- Reset senha via admin
+- Bulk import CSV: template imprimível de credenciais
 
 ### P3
 - App mobile (React Native)
 - Multi-tenant (múltiplas escolas)
-- Registro INPI (marca + software)
 - 2FA para admin
+- Registro INPI (marca + software)
 - Gamificação avançada (badges, ranking)
 
-## Próximas tasks sugeridas
-1. Tela "Meu Perfil" (usuário troca própria senha/email)
-2. Bulk import CSV de alunos
-3. Cron job da mesada
-4. Deploy em staging para escola piloto
-
 ## Histórico
-- **Jan/2026**: MVP navegável funcional (3 dashboards + backend + seed + docs)
-- **Jun/2026**: Gestão de usuários pelo admin + setup local documentado + 100% nos testes
+- **Jan/2026**: MVP navegável
+- **Jun/2026**: gestão de usuários + setup local
+- **Jun/2026**: Beta-1 (CSV import + vouchers)
+- **Jul/2026**: Beta-2 (transferências + presença condicional)

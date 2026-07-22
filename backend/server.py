@@ -860,15 +860,17 @@ async def attendance_mark(payload: AttendanceMark, user: dict = Depends(require_
         present = sid in payload.present_ids
         await db.attendance.update_one(
             {"user_id": sid, "date": d},
-            {"$set": {
-                "id": str(uuid.uuid4()),
-                "user_id": sid,
-                "class_id": payload.class_id,
-                "date": d,
-                "present": present,
-                "marked_by": user["id"],
-                "marked_at": now_utc().isoformat(),
-            }},
+            {
+                "$set": {
+                    "user_id": sid,
+                    "class_id": payload.class_id,
+                    "date": d,
+                    "present": present,
+                    "marked_by": user["id"],
+                    "marked_at": now_utc().isoformat(),
+                },
+                "$setOnInsert": {"id": str(uuid.uuid4())},
+            },
             upsert=True,
         )
         updates.append({"user_id": sid, "present": present})

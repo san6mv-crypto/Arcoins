@@ -45,6 +45,8 @@ export default function Attendance() {
 
   useEffect(() => {
     if (!classId || !date) return;
+    setAttendance({});
+    setStudents([]);
     (async () => {
       const { data } = await axios.get(`${API}/attendance/class/${classId}?date=${date}`);
       setStudents(data.students);
